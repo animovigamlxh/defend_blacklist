@@ -114,9 +114,6 @@ for fw in "${FW_COMMANDS[@]}"; do
             $fw -A OUTPUT -p udp -m multiport --dports "$BLOCKED_UDP_PORTS" -j DROP
             echo "  [🚫] ($FW_TYPE) 黑名单: 阻止出站 UDP 端口: $BLOCKED_UDP_PORTS"
         fi
-        
-        # 默认策略保持 ACCEPT
-        echo "  [🔓] ($FW_TYPE) 默认出站策略为 ACCEPT。黑名单模式激活！"
     fi
 done
 
