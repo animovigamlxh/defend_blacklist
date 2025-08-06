@@ -1,11 +1,48 @@
 #!/bin/bash
 
-# 🛡️ 机场节点最终安全脚本 v8 (交互式模式选择)
-# Airport Node Final Security Shield v8 - Interactive Mode Selection
+# 🛡️ 机场节点最终安全脚本 v9 (修复黑名单长端口列表问题)
+# Airport Node Final Security Shield v9 - Long Port List Fix
 
-echo "✅ RUNNING SCRIPT VERSION 8 (INTERACTIVE MODE)"
+echo "✅ RUNNING SCRIPT VERSION 9 (INTERACTIVE MODE WITH CHUNKING)"
 echo "🛡️ 欢迎使用机场节点最终安全防护脚本"
 echo "════════════════════════════════════════════════════════════════════"
+
+# --- 辅助函数：分块应用规则 ---
+# iptables的multiport模块一次最多只支持15个端口。此函数将长列表分块处理。
+apply_rules_in_chunks() {
+    local fw_cmd="$1"
+    local proto="$2"
+    local action="$3"
+    local port_list_str="$4"
+    local fw_type="$5"
+    local mode_info="$6" # "白名单" 或 "黑名单"
+
+    # 将逗号分隔的字符串转换为数组
+    IFS=',' read -r -a port_array <<< "$port_list_str"
+    
+    local chunk_size=15
+    local i=0
+    while [ $i -lt ${#port_array[@]} ]; do
+        # 从数组中提取一个块
+        chunk=("${port_array[@]:i:chunk_size}")
+        # 将块转换回逗号分隔的字符串
+        chunk_str=$(IFS=,; echo "${chunk[*]}")
+        
+        # 应用规则
+        "$fw_cmd" -A OUTPUT -p "$proto" -m multiport --dports "$chunk_str" -j "$action"
+        
+        local log_symbol="✅"
+        local log_action_text="允许"
+        if [ "$action" = "DROP" ]; then
+            log_symbol="🚫"
+            log_action_text="阻止"
+        fi
+        echo "  [$log_symbol] ($fw_type) $mode_info: ${log_action_text}出站 $proto 端口 (块): $chunk_str"
+        
+        i=$((i + chunk_size))
+    done
+}
+
 
 # --- 交互式模式选择 ---
 MODE=""
@@ -32,12 +69,11 @@ echo "════════════════════════�
 
 # --- 配置区 (白名单/黑名单定义) ---
 
-# 白名单模式配置 (当 MODE="whitelist")
+# 白名单模式配置
 ALLOWED_TCP_PORTS="32400,8096,8008,53,80,443"
 ALLOWED_UDP_PORTS="53"
 
-# 黑名单模式配置 (当 MODE="blacklist")
-# 从 https://www.cnblogs.com/xiaozi/p/13296754.html 提取的常见高风险端口
+# 黑名单模式配置
 BLOCKED_TCP_PORTS="21,22,23,25,445,873,1090,1099,1433,1521,2181,2375,3306,3389,5432,5632,5900,5984,6379,7001,8000,8080,8161,9043,9200,11211,27017,50000,50070"
 BLOCKED_UDP_PORTS="161" # SNMP
 
@@ -51,10 +87,10 @@ fi
 
 FW_COMMANDS=("iptables" "ip6tables")
 
-# 备份当前规则，仅供紧急手动恢复
+# 备份当前规则
 BACKUP_FILE_V4="/tmp/iptables_backup_final_$(date +%Y%m%d_%H%M%S).v4.rules"
 BACKUP_FILE_V6="/tmp/ip6tables_backup_final_$(date +%Y%m%d_%H%M%S).v6.rules"
-echo "🔄 正在备份当前规则 (仅供紧急手动恢复)..."
+echo "🔄 正在备份当前规则..."
 iptables-save > "$BACKUP_FILE_V4"
 ip6tables-save > "$BACKUP_FILE_V6"
 echo "✅ 备份完成。"
@@ -63,23 +99,17 @@ for fw in "${FW_COMMANDS[@]}"; do
     FW_TYPE="IPv$( if [ "$fw" = "iptables" ]; then echo "4"; else echo "6"; fi )"
     echo "⚙️  正在为 $fw ($FW_TYPE) 使用 $MODE 模式重建规则..."
 
-    # 1. 强制清空 (Flush) OUTPUT 链中的所有旧规则
     $fw -F OUTPUT
     echo "  [🧹] 已清空 $fw 的 OUTPUT 链。"
 
-    # 2. 初始策略: 设为 ACCEPT，以防在规则应用期间中断连接
     $fw -P OUTPUT ACCEPT
 
-    # 3. 核心规则 (对两种模式都通用)
-    # 允许本地回环接口 (lo)
     $fw -A OUTPUT -o lo -j ACCEPT
     echo "  [✅] ($FW_TYPE) 允许本地回环 (lo) 流量"
 
-    # 允许已建立和相关的连接 (保护当前SSH会话等)
     $fw -A OUTPUT -m state --state ESTABLISHED,RELATED -j ACCEPT
     echo "  [✅] ($FW_TYPE) 允许已建立的连接"
     
-    # 允许ICMP (Ping)
     if [ "$fw" = "iptables" ]; then
         $fw -A OUTPUT -p icmp -j ACCEPT
     else
@@ -88,35 +118,19 @@ for fw in "${FW_COMMANDS[@]}"; do
     echo "  [✅] ($FW_TYPE) 允许 ICMP 流量"
 
     if [ "$MODE" = "whitelist" ]; then
-        # --- 白名单模式逻辑 ---
         echo "  [INFO] 应用白名单规则..."
-        if [ -n "$ALLOWED_TCP_PORTS" ]; then
-            $fw -A OUTPUT -p tcp -m multiport --dports "$ALLOWED_TCP_PORTS" -j ACCEPT
-            echo "  [✅] ($FW_TYPE) 白名单: 允许出站 TCP 端口: $ALLOWED_TCP_PORTS"
-        fi
-        if [ -n "$ALLOWED_UDP_PORTS" ]; then
-            $fw -A OUTPUT -p udp -m multiport --dports "$ALLOWED_UDP_PORTS" -j ACCEPT
-            echo "  [✅] ($FW_TYPE) 白名单: 允许出站 UDP 端口: $ALLOWED_UDP_PORTS"
-        fi
-
-        # 锁定策略：将默认策略设置为 DROP
+        apply_rules_in_chunks "$fw" "tcp" "ACCEPT" "$ALLOWED_TCP_PORTS" "$FW_TYPE" "白名单"
+        apply_rules_in_chunks "$fw" "udp" "ACCEPT" "$ALLOWED_UDP_PORTS" "$FW_TYPE" "白名单"
         $fw -P OUTPUT DROP
         echo "  [🔒] ($FW_TYPE) 默认出站策略已设置为 DROP。白名单模式激活！"
 
     elif [ "$MODE" = "blacklist" ]; then
-        # --- 黑名单模式逻辑 ---
         echo "  [INFO] 应用黑名单规则..."
-        if [ -n "$BLOCKED_TCP_PORTS" ]; then
-            $fw -A OUTPUT -p tcp -m multiport --dports "$BLOCKED_TCP_PORTS" -j DROP
-            echo "  [🚫] ($FW_TYPE) 黑名单: 阻止出站 TCP 端口: $BLOCKED_TCP_PORTS"
-        fi
-        if [ -n "$BLOCKED_UDP_PORTS" ]; then
-            $fw -A OUTPUT -p udp -m multiport --dports "$BLOCKED_UDP_PORTS" -j DROP
-            echo "  [🚫] ($FW_TYPE) 黑名单: 阻止出站 UDP 端口: $BLOCKED_UDP_PORTS"
-        fi
+        apply_rules_in_chunks "$fw" "tcp" "DROP" "$BLOCKED_TCP_PORTS" "$FW_TYPE" "黑名单"
+        apply_rules_in_chunks "$fw" "udp" "DROP" "$BLOCKED_UDP_PORTS" "$FW_TYPE" "黑名单"
+        echo "  [🔓] ($FW_TYPE) 默认出站策略为 ACCEPT。黑名单模式激活！"
     fi
 done
-
 
 # --- 保存规则以实现持久化 ---
 echo "💾 正在永久保存防火墙规则..."
