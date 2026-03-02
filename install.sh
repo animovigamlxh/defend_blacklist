@@ -1,9 +1,9 @@
 #!/bin/bash
 
-# 🛡️ 机场节点最终安全脚本 v13
-# 更新：增加 SSH (22端口) 5秒/次 频率限制，修复所有语法兼容性问题
+# 🛡️ 机场节点最终安全脚本 v13.1
+# 更新：将 SSH (22端口) 频率限制调整为 3秒/次
 
-echo "✅ RUNNING SCRIPT VERSION 13"
+echo "✅ RUNNING SCRIPT VERSION 13.1"
 echo "🛡️ 欢迎使用机场节点安全防护脚本"
 echo "════════════════════════════════════════════════════════════════════"
 
@@ -50,15 +50,15 @@ for fw in iptables ip6tables; do
     $fw -A OUTPUT -m state --state ESTABLISHED,RELATED -j ACCEPT
     [ "$fw" = "iptables" ] && $fw -A OUTPUT -p icmp -j ACCEPT || $fw -A OUTPUT -p icmpv6 -j ACCEPT
 
-    # --- SSH (22端口) 5秒频率限制逻辑 ---
+    # --- SSH (22端口) 3秒频率限制逻辑 ---
     # 入站限制 (别人连我)
     $fw -A INPUT -p tcp --dport 22 -m state --state NEW -m recent --set --name SSH_SPEED_LIMIT
-    $fw -A INPUT -p tcp --dport 22 -m state --state NEW -m recent --update --seconds 5 --hitcount 2 --name SSH_SPEED_LIMIT -j DROP
+    $fw -A INPUT -p tcp --dport 22 -m state --state NEW -m recent --update --seconds 3 -hitcount 2 --name SSH_SPEED_LIMIT -j DROP
     $fw -A INPUT -p tcp --dport 22 -j ACCEPT
 
     # 出站限制 (我连别人)
     $fw -A OUTPUT -p tcp --dport 22 -m state --state NEW -m recent --set --name SSH_OUT_LIMIT
-    $fw -A OUTPUT -p tcp --dport 22 -m state --state NEW -m recent --update --seconds 5 --hitcount 2 --name SSH_OUT_LIMIT -j DROP
+    $fw -A OUTPUT -p tcp --dport 22 -m state --state NEW -m recent --update --seconds 3 -hitcount 2 --name SSH_OUT_LIMIT -j DROP
     $fw -A OUTPUT -p tcp --dport 22 -j ACCEPT
 
     # --- 模式规则 ---
@@ -88,6 +88,6 @@ fi
 
 echo "════════════════════════════════════════════════════════════════════"
 echo "🎉 部署完成！"
-echo "✅ SSH (22端口) 已设置为 5秒/次 频率限制。"
+echo "✅ SSH (22端口) 已设置为 3秒/次 频率限制。"
 echo "📜 当前 IPv4 规则摘要:"
 iptables -L OUTPUT -n --line-numbers
